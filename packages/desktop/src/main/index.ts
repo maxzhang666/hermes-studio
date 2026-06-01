@@ -6,6 +6,7 @@ import { checkForDesktopUpdates, initAutoUpdater } from './updater'
 import { t } from './desktop-i18n'
 import { installHermesStudioCliShim } from './cli-shim'
 import { parseHermesCliArgs, runBundledHermesCli } from './hermes-cli'
+import { ensureDesktopRuntime } from './runtime-manager'
 
 const PORT = Number(process.env.HERMES_DESKTOP_PORT) || 8748
 const START_HIDDEN = process.argv.includes('--hidden')
@@ -184,9 +185,24 @@ function splashHtml(): string {
 }
 
 async function bootstrap() {
+  try {
+    await ensureDesktopRuntime()
+  } catch (err) {
+    console.error('Failed to prepare Hermes runtime:', err)
+    if (mainWindow) {
+      const msg = String(err instanceof Error ? err.message : err).replace(/[<>]/g, '')
+      mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(
+        `<html><body style="font-family:system-ui;padding:32px;background:#1a1a1a;color:#eee">
+         <h2>Failed to prepare Hermes runtime</h2><pre style="white-space:pre-wrap;color:#f88">${msg}</pre>
+         </body></html>`,
+      ))
+    }
+    return
+  }
+
   if (!hermesBinExists()) {
     console.error(`hermes binary missing at ${hermesBin()}`)
-    console.error('Run: npm run prepare:python (to bundle Python + hermes-agent)')
+    console.error('Run: npm run prepare:runtime (to build a local Hermes runtime)')
   }
 
   try {

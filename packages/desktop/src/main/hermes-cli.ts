@@ -14,6 +14,7 @@ import {
   webUiHome,
 } from './paths'
 import { HERMES_CLI_ARG } from './cli-constants'
+import { ensureDesktopRuntime } from './runtime-manager'
 
 export function parseHermesCliArgs(argv: string[] = process.argv): string[] | null {
   const index = argv.indexOf(HERMES_CLI_ARG)
@@ -22,10 +23,17 @@ export function parseHermesCliArgs(argv: string[] = process.argv): string[] | nu
 }
 
 export async function runBundledHermesCli(args: string[]): Promise<number> {
+  try {
+    await ensureDesktopRuntime()
+  } catch (err) {
+    console.error(`Failed to prepare Hermes runtime: ${err instanceof Error ? err.message : String(err)}`)
+    return 1
+  }
+
   const command = hermesBin()
   if (!existsSync(command)) {
     console.error(`hermes binary missing at ${command}`)
-    console.error('Run: npm run prepare:python (to bundle Python + hermes-agent)')
+    console.error('Run: npm run prepare:runtime (to build a local Hermes runtime)')
     return 127
   }
 
