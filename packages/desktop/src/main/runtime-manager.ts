@@ -48,6 +48,16 @@ type RuntimeDescriptor = {
   hermesAgentVersion?: string
 }
 
+export type RuntimeProgress = {
+  stage: 'resolve' | 'download' | 'verify' | 'extract' | 'ready'
+  message: string
+  percent?: number
+  receivedBytes?: number
+  totalBytes?: number
+}
+
+type RuntimeProgressHandler = (progress: RuntimeProgress) => void
+
 function runtimeReady(): boolean {
   const gitReady = process.platform !== 'win32' || !!bundledGit()
   return hermesBinExists() && existsSync(bundledNode()) && gitReady
@@ -154,7 +164,12 @@ function cachedRuntimeMatches(root: string, descriptor: RuntimeDescriptor): bool
   return manifest.asset.name === descriptor.name
 }
 
-function downloadFile(url: string, target: string, redirects = 5): Promise<void> {
+function downloadFile(
+  url: string,
+  target: string,
+  onProgress?: RuntimeProgressHandler,
+  redirects = 5,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url)
     const getter = parsed.protocol === 'http:' ? httpGet : httpsGet
@@ -163,7 +178,7 @@ function downloadFile(url: string, target: string, redirects = 5): Promise<void>
       const location = response.headers.location
       if (status >= 300 && status < 400 && location && redirects > 0) {
         response.resume()
-        downloadFile(new URL(location, url).toString(), target, redirects - 1).then(resolve, reject)
+        downloadFile(new URL(location, url).toString(), target, onProgress, redirects - 1).then(resolve, reject)
         return
       }
       if (status < 200 || status >= 300) {
@@ -171,6 +186,19 @@ function downloadFile(url: string, target: string, redirects = 5): Promise<void>
         reject(new Error(`GET ${url} returned ${status}`))
         return
       }
+
+      const totalBytes = Number(response.headers['content-length']) || undefined
+      let receivedBytes = 0
+      response.on('data', chunk => {
+        receivedBytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk)
+        onProgress?.({
+          stage: 'download',
+          message: 'Downloading Hermes runtime...',
+          percent: totalBytes ? Math.min(100, (receivedBytes / totalBytes) * 100) : undefined,
+          receivedBytes,
+          totalBytes,
+        })
+      })
 
       const file = createWriteStream(target)
       response.pipe(file)
@@ -216,12 +244,13 @@ async function extractRuntimeArchive(archive: string, targetRoot: string): Promi
   }
 }
 
-export async function ensureDesktopRuntime(): Promise<void> {
+export async function ensureDesktopRuntime(onProgress?: RuntimeProgressHandler): Promise<void> {
   const runtimeRoot = desktopRuntimeDir()
   mkdirSync(runtimeRoot, { recursive: true })
 
   let descriptor: RuntimeDescriptor
   try {
+    onProgress?.({ stage: 'resolve', message: 'Checking Hermes runtime...' })
     descriptor = await resolveRuntimeDescriptor()
   } catch (err) {
     if (runtimeReady() && !process.env.HERMES_DESKTOP_RUNTIME_FORCE_UPDATE) {
@@ -235,14 +264,17 @@ export async function ensureDesktopRuntime(): Promise<void> {
 
   const archive = join(dirname(runtimeRoot), `${descriptor.name}.download`)
   console.log(`[runtime] downloading Hermes runtime ${descriptor.name}`)
-  await downloadFile(descriptor.url, archive)
+  onProgress?.({ stage: 'download', message: `Downloading ${descriptor.name}...` })
+  await downloadFile(descriptor.url, archive, onProgress)
   if (descriptor.sha256) {
+    onProgress?.({ stage: 'verify', message: 'Verifying Hermes runtime...' })
     const actual = await sha256File(archive)
     if (actual !== descriptor.sha256) {
       throw new Error(`Runtime checksum mismatch for ${descriptor.name}`)
     }
   }
 
+  onProgress?.({ stage: 'extract', message: 'Extracting Hermes runtime...' })
   await extractRuntimeArchive(archive, runtimeRoot)
   const archiveSize = statSync(archive).size
   rmSync(archive, { force: true })
@@ -260,5 +292,6 @@ export async function ensureDesktopRuntime(): Promise<void> {
       },
     }, null, 2))
   }
+  onProgress?.({ stage: 'ready', message: 'Hermes runtime ready.' })
   console.log(`[runtime] Hermes runtime ready at ${runtimeRoot}`)
 }

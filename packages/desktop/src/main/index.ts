@@ -6,7 +6,7 @@ import { checkForDesktopUpdates, initAutoUpdater } from './updater'
 import { t } from './desktop-i18n'
 import { installHermesStudioCliShim } from './cli-shim'
 import { parseHermesCliArgs, runBundledHermesCli } from './hermes-cli'
-import { ensureDesktopRuntime } from './runtime-manager'
+import { ensureDesktopRuntime, type RuntimeProgress } from './runtime-manager'
 
 const PORT = Number(process.env.HERMES_DESKTOP_PORT) || 8748
 const START_HIDDEN = process.argv.includes('--hidden')
@@ -169,24 +169,65 @@ function splashHtml(): string {
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Hermes Studio</title>
 <style>
   html,body{margin:0;height:100%;background:#1a1a1a;color:#e5e5e5;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif;}
-  .wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:24px}
+  .wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;gap:20px}
   .dot{width:10px;height:10px;border-radius:50%;background:#888;animation:pulse 1.2s ease-in-out infinite}
   @keyframes pulse{0%,100%{opacity:.3}50%{opacity:1}}
   .row{display:flex;gap:8px}
   .row .dot:nth-child(2){animation-delay:.2s}.row .dot:nth-child(3){animation-delay:.4s}
-  .label{font-size:14px;color:#999}
+  .label{font-size:14px;color:#b8b8b8}
+  .detail{min-height:18px;font-size:12px;color:#7f7f7f}
+  .progress{width:320px;height:6px;border-radius:999px;background:#2b2b2b;overflow:hidden}
+  .bar{width:0;height:100%;background:#d8d8d8;transition:width .18s ease}
   h1{font-weight:500;margin:0;font-size:18px}
 </style></head><body><div class="wrap">
 <h1>Hermes Studio</h1>
 <div class="row"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
-<div class="label">Starting local services…</div>
+<div id="label" class="label">Starting local services...</div>
+<div class="progress"><div id="bar" class="bar"></div></div>
+<div id="detail" class="detail"></div>
 </div></body></html>`
   return 'data:text/html;charset=utf-8,' + encodeURIComponent(html)
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['KB', 'MB', 'GB']
+  let value = bytes / 1024
+  let unit = units[0]
+  for (let i = 1; i < units.length && value >= 1024; i += 1) {
+    value /= 1024
+    unit = units[i]
+  }
+  return `${value.toFixed(value >= 100 ? 0 : 1)} ${unit}`
+}
+
+function updateSplash(progress: RuntimeProgress) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const label = progress.message
+  const percent = typeof progress.percent === 'number' ? Math.round(progress.percent) : null
+  let detail = ''
+  if (progress.receivedBytes && progress.totalBytes) {
+    detail = `${formatBytes(progress.receivedBytes)} / ${formatBytes(progress.totalBytes)}`
+    if (percent !== null) detail += ` (${percent}%)`
+  } else if (percent !== null) {
+    detail = `${percent}%`
+  }
+
+  mainWindow.webContents.executeJavaScript(`
+    {
+      const label = document.getElementById('label');
+      const detail = document.getElementById('detail');
+      const bar = document.getElementById('bar');
+      if (label) label.textContent = ${JSON.stringify(label)};
+      if (detail) detail.textContent = ${JSON.stringify(detail)};
+      if (bar) bar.style.width = ${JSON.stringify(percent === null ? '100%' : `${percent}%`)};
+    }
+  `).catch(() => undefined)
+}
+
 async function bootstrap() {
   try {
-    await ensureDesktopRuntime()
+    await ensureDesktopRuntime(updateSplash)
   } catch (err) {
     console.error('Failed to prepare Hermes runtime:', err)
     if (mainWindow) {
