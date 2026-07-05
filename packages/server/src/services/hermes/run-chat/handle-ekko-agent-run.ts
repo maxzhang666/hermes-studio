@@ -14,6 +14,7 @@ import {
   type ModelResponse,
 } from '../../../../../ekko-agent/src'
 import { getGlobalEkkoAgent } from '../../ekko-agent/manager'
+import { resolveEkkoMcpServers } from '../../ekko-agent/mcp'
 import { createSession, addMessage, getSession, updateSessionStats } from '../../../db/hermes/session-store'
 import { logger } from '../../logger'
 import { getProfileDir } from '../hermes-profile'
@@ -402,7 +403,7 @@ export async function handleEkkoAgentRun(
     apiMode,
     timeoutMs: 120_000,
   })
-  const mcpServers = data.mcpServers || data.mcp_servers
+  const mcpServers = resolveEkkoMcpServers(profile, data.mcpServers || data.mcp_servers)
   const modelClient = createConsoleModelClient(createModelClient(providerConfig), {
     sessionId,
     providerConfig,
