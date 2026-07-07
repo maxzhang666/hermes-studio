@@ -13,7 +13,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: docker-${{ github.ref_name }}
+  group: docker-${{ github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -46,8 +46,10 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
             type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
