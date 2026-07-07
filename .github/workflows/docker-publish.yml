@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: docker-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'release' }}
 
 jobs:
   build-and-push:
@@ -47,6 +47,7 @@ jobs:
           images: ${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+            type=raw,value=${{ github.event.release.tag_name }},enable=${{ github.event_name == 'release' }}
             type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
