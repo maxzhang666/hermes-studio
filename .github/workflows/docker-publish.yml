@@ -5,9 +5,11 @@ on:
   push:
     branches:
       - main
+  release:
+    types: [published]
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 concurrency:
@@ -46,3 +48,18 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ env.IMAGE_NAME }}:latest
+
+  keep-release-out-of-latest:
+    name: Keep release out of GitHub latest
+    if: always() && github.event_name == 'release'
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark release as not latest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --latest=false
