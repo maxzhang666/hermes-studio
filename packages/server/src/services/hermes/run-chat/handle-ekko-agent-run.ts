@@ -1,5 +1,5 @@
 import type { Server, Socket } from 'socket.io'
-import { createHash } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { inspect } from 'util'
 import {
   createModelClient,
@@ -15,8 +15,10 @@ import {
 } from '../../../../../ekko-agent/src'
 import { getGlobalEkkoAgent } from '../../ekko-agent/manager'
 import { resolveEkkoMcpServers } from '../../ekko-agent/mcp'
-import { createSession, addMessage, getSession, updateSessionStats } from '../../../db/hermes/session-store'
+import { resolveEkkoAuthorizedProviderCredentials } from '../../ekko-agent/auth-providers'
+import { createSession, addMessage, getSession, updateSession, updateSessionStats } from '../../../db/hermes/session-store'
 import { logger } from '../../logger'
+import { recordSessionUsage } from '../../usage-recorder'
 import { getProfileDir } from '../hermes-profile'
 import { observeRunChatPetEvent } from '../pet-state-socket'
 import { contentBlocksToString, extractTextForPreview } from './content-blocks'
@@ -449,6 +451,11 @@ export async function handleEkkoAgentRun(
       workspace,
     })
   }
+  try {
+    updateSession(sessionId, { ended_at: null, end_reason: null, last_active: now })
+  } catch (err) {
+    logger.warn(err, '[chat-run-socket] failed to reopen ekko-agent session %s', sessionId)
+  }
 
   if (shouldPersistUserMessage) {
     const role = data.display_role === 'command' ? 'command' : 'user'
@@ -480,9 +487,13 @@ export async function handleEkkoAgentRun(
     })
   }
 
-  const baseUrl = data.baseUrl || data.base_url || ''
+  const authorizedCredentials = await resolveEkkoAuthorizedProviderCredentials(
+    profile,
+    modelConfig.provider,
+  )
+  const baseUrl = data.baseUrl || data.base_url || authorizedCredentials.baseUrl || ''
   const apiMode = data.apiMode || data.api_mode
-  const apiKey = data.apiKey || data.api_key || undefined
+  const apiKey = data.apiKey || data.api_key || authorizedCredentials.apiKey
   const { providerConfig, fallbackProviderConfig } = resolveModelProviderConfigs({
     provider: modelConfig.provider,
     baseUrl,
@@ -503,13 +514,14 @@ export async function handleEkkoAgentRun(
       : undefined,
   })
   const agent = getGlobalEkkoAgent()
+  const memoryUsageBatchId = randomUUID()
 
   let assistantText = ''
   let assistantReasoning = ''
   let runId = ''
   let usageInput = 0
   let usageOutput = 0
-  let sawStreamUsage = false
+  let usageCallIndex = 0
   let contextEstimate: any
   const handleRuntimeEvent = (event: AgentRuntimeEvent) => {
     if ('runId' in event) runId = event.runId
@@ -546,10 +558,6 @@ export async function handleEkkoAgentRun(
           })
         }
       }
-      if (event.message.usage && !sawStreamUsage) {
-        usageInput += event.message.usage.inputTokens || 0
-        usageOutput += event.message.usage.outputTokens || 0
-      }
     } else if (event.type === 'model.delta') {
       assistantText += event.text
       emit('message.delta', {
@@ -558,9 +566,22 @@ export async function handleEkkoAgentRun(
         delta: event.text,
       })
     } else if (event.type === 'model.usage') {
-      sawStreamUsage = true
       usageInput += event.usage.inputTokens || 0
       usageOutput += event.usage.outputTokens || 0
+      usageCallIndex += 1
+      recordSessionUsage({
+        sessionId,
+        runId: `${event.runId}:step:${event.step}:call:${usageCallIndex}`,
+        source: 'ekko_agent',
+        agent: 'ekko_agent',
+        usageScope: 'model_call',
+        apiCalls: 1,
+        usage: event.usage,
+        profile,
+        model: modelConfig.model,
+        provider: modelConfig.provider,
+        isEstimated: false,
+      })
     } else if (event.type === 'model.context') {
       emit('context.updated', {
         event: 'context.updated',
@@ -603,6 +624,7 @@ export async function handleEkkoAgentRun(
 
   try {
     logger.info('[chat-run-socket] starting ekko-agent run for session %s', sessionId)
+    const authenticatedUserId = socket.data?.user?.id == null ? undefined : String(socket.data.user.id)
     const result = await agent.run({
       modelClient,
       model: modelConfig.model,
@@ -612,9 +634,27 @@ export async function handleEkkoAgentRun(
       messages: toAgentMessages(state.messages),
       signal: abortController.signal,
       onEvent: handleRuntimeEvent,
+      onMemoryUsage: event => {
+        recordSessionUsage({
+          sessionId,
+          runId: `memory-summary:${memoryUsageBatchId}:call:${event.callIndex}`,
+          source: 'ekko_agent',
+          agent: 'ekko_agent',
+          usageScope: 'model_call',
+          purpose: event.purpose,
+          apiCalls: 1,
+          usage: event.usage,
+          profile,
+          model: event.model || modelConfig.model,
+          provider: modelConfig.provider,
+          isEstimated: false,
+        })
+      },
       toolContext: {
         cwd: workspace,
         workspaceRoot: workspace,
+        workspaceId: workspace,
+        userId: authenticatedUserId,
         sessionId,
         browserSessionId: sessionId,
         mcpServers,
@@ -623,6 +663,8 @@ export async function handleEkkoAgentRun(
       },
       metadata: {
         session_id: sessionId,
+        workspace_id: workspace,
+        user_id: authenticatedUserId,
         profile,
       },
     })
@@ -689,6 +731,16 @@ export async function handleEkkoAgentRun(
         provider_config: redactProviderConfig(providerConfig),
         response: result.output,
       }, '[chat-run-socket] ekko-agent model returned empty output')
+      if (state.queue.length === 0) {
+        try {
+          updateSession(sessionId, {
+            ended_at: Math.floor(Date.now() / 1000),
+            end_reason: 'error',
+          })
+        } catch (err) {
+          logger.warn(err, '[chat-run-socket] failed to write ekko-agent empty-response end marker for %s', sessionId)
+        }
+      }
       emit('run.failed', {
         event: 'run.failed',
         run_id: runId || result.runId,
@@ -730,6 +782,16 @@ export async function handleEkkoAgentRun(
     state.outputTokens = (state.outputTokens || 0) + usageOutput
     if (contextEstimate?.contextTokens != null) state.contextTokens = contextEstimate.contextTokens
     updateSessionStats(sessionId)
+    if (state.queue.length === 0) {
+      try {
+        updateSession(sessionId, {
+          ended_at: Math.floor(Date.now() / 1000),
+          end_reason: 'complete',
+        })
+      } catch (err) {
+        logger.warn(err, '[chat-run-socket] failed to write ekko-agent session end marker for %s', sessionId)
+      }
+    }
     emit('usage.updated', {
       event: 'usage.updated',
       run_id: runId || result.runId,
@@ -761,6 +823,16 @@ export async function handleEkkoAgentRun(
     }
     const error = err instanceof Error ? err.message : String(err)
     logger.warn(err, '[chat-run-socket] ekko-agent run failed for session %s', sessionId)
+    if (state.queue.length === 0) {
+      try {
+        updateSession(sessionId, {
+          ended_at: Math.floor(Date.now() / 1000),
+          end_reason: 'error',
+        })
+      } catch (updateErr) {
+        logger.warn(updateErr, '[chat-run-socket] failed to write ekko-agent error end marker for %s', sessionId)
+      }
+    }
     emit('run.failed', {
       event: 'run.failed',
       run_id: runId,

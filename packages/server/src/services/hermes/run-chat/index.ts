@@ -274,6 +274,7 @@ export class ChatRunSocket {
             mcpServers: data.mcpServers,
             mcp_servers: data.mcp_servers,
             commandPassthrough: data.allow_command_passthrough,
+            reasoningEffort: data.reasoning_effort,
             originSocketId: socket.id,
           })
           this.nsp.to(`session:${data.session_id}`).emit('run.queued', {
@@ -412,6 +413,7 @@ export class ChatRunSocket {
       mcp_servers?: Record<string, unknown>
       one_shot_model?: boolean
       allow_command_passthrough?: boolean
+      reasoning_effort?: string
       onEvent?: (event: string, payload: any) => void
     },
     profile: string,
@@ -521,6 +523,7 @@ export class ChatRunSocket {
       parentTitle: sessionDetail?.parent_title || null,
       parentLastMessage: sessionDetail?.parent_last_message || null,
       parentLastMessageRole: sessionDetail?.parent_last_message_role || null,
+      workspace: sessionDetail?.workspace || null,
       isWorking: state.isWorking,
       isAborting: state.isAborting || false,
       events: resumeEvents,
@@ -661,6 +664,7 @@ export class ChatRunSocket {
       mcp_servers: next.mcp_servers,
       one_shot_model: next.oneShotModel,
       allow_command_passthrough: next.commandPassthrough,
+      reasoning_effort: next.reasoningEffort,
     }, next.profile || fallbackProfile, skipUserMessage)
   }
 
@@ -694,6 +698,7 @@ export class ChatRunSocket {
       mcp_servers?: Record<string, unknown>
       profile?: string
       reasoning_effort?: string
+      one_shot_model?: boolean
     },
     options: { profile?: string; user?: AuthenticatedUser; timeoutMs?: number; approvalChoice?: ChatRunAutoApprovalChoice } = {},
   ): Promise<ChatRunAndWaitResult> {
@@ -793,7 +798,11 @@ export class ChatRunSocket {
       }
       const timer = timeoutMs
         ? setTimeout(() => {
-            finish({ ok: false, event: 'run.failed', error: `chat-run timed out after ${timeoutMs}ms` })
+            const error = `chat-run timed out after ${timeoutMs}ms`
+            finish({ ok: false, event: 'run.failed', error })
+            void this.abortSession(sessionId, error).catch(err => {
+              logger.warn(err, '[chat-run-socket] failed to abort timed-out session %s', sessionId)
+            })
           }, timeoutMs)
         : null
       waiters.add(onEvent)

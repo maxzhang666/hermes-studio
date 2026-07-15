@@ -2,9 +2,10 @@
 import { computed, ref } from 'vue'
 import { Handle, Position, type NodeProps } from '@vue-flow/core'
 import { NodeResizer } from '@vue-flow/node-resizer'
-import { NInput, NSelect, NTooltip, useMessage } from 'naive-ui'
+import { NInput, NSelect, NSwitch, NTooltip, useMessage } from 'naive-ui'
 import { useI18n } from 'vue-i18n'
 import WorkflowModelSelector from './WorkflowModelSelector.vue'
+import WorkflowFieldHelp from './WorkflowFieldHelp.vue'
 import type { WorkflowAgentNodeData, WorkflowAgentNodeEditableData } from './types'
 import type { CodingAgentApiMode } from '@/api/coding-agents'
 import type { ProviderApiMode } from '@/api/hermes/system'
@@ -32,6 +33,16 @@ const apiModeOptions = computed(() => [
   { label: t('codingAgents.protocolOpenAiChat'), value: 'chat_completions' },
   { label: t('codingAgents.protocolOpenAiResponses'), value: 'codex_responses' },
   { label: t('codingAgents.protocolAnthropicMessages'), value: 'anthropic_messages' },
+])
+const reasoningEffortOptions = computed(() => [
+  { label: t('chat.reasoningEffort.options.default'), value: 'default' },
+  { label: t('chat.reasoningEffort.options.none'), value: 'none' },
+  { label: t('chat.reasoningEffort.options.minimal'), value: 'minimal' },
+  { label: t('chat.reasoningEffort.options.low'), value: 'low' },
+  { label: t('chat.reasoningEffort.options.medium'), value: 'medium' },
+  { label: t('chat.reasoningEffort.options.high'), value: 'high' },
+  { label: t('chat.reasoningEffort.options.xhigh'), value: 'xhigh' },
+  { label: t('chat.reasoningEffort.options.max'), value: 'max' },
 ])
 const imageAttachments = computed(() => props.data.images.filter(isImagePath))
 const fileAttachments = computed(() => props.data.images.filter(path => !isImagePath(path)))
@@ -176,6 +187,39 @@ async function uploadImages(files: File[]) {
         :placeholder="t('workflow.node.apiMode')"
         @update:value="value => updateField('apiMode', value as CodingAgentApiMode)"
       />
+      <NSelect
+        :value="data.reasoningEffort"
+        :options="reasoningEffortOptions"
+        size="small"
+        :disabled="data.readonly"
+        :placeholder="t('chat.reasoningEffort.tooltip')"
+        @update:value="value => updateField('reasoningEffort', value as string)"
+      />
+      <div class="node-field-row">
+        <span class="node-field-label-row">
+          <span>{{ t('workflow.node.join') }}</span>
+          <WorkflowFieldHelp
+            :text="data.orchestration?.join === 'any' ? t('workflow.node.joinAnyHelp') : t('workflow.node.joinAllHelp')"
+            test-id="workflow-node-join-help"
+          />
+        </span>
+        <NSelect
+          :value="data.orchestration?.join || 'all'"
+          :options="[{ label: t('workflow.node.joinAll'), value: 'all' }, { label: t('workflow.node.joinAny'), value: 'any' }]"
+          size="small"
+          :disabled="data.readonly"
+          @update:value="value => updateField('orchestration', { join: value as 'all' | 'any' })"
+        />
+      </div>
+      <label class="node-toggle-row">
+        <span>{{ t('workflow.node.approvalRequired') }}</span>
+        <NSwitch
+          :value="data.approvalRequired === true"
+          size="small"
+          :disabled="data.readonly"
+          @update:value="value => updateField('approvalRequired', value)"
+        />
+      </label>
       <NSelect
         :value="data.skills"
         :options="data.skillOptions"
@@ -397,6 +441,15 @@ async function uploadImages(files: File[]) {
   box-shadow: 0 0 8px rgba(37, 99, 235, 0.65);
 }
 
+.status-pending_approval .node-status-dot {
+  background: #d97706;
+  box-shadow: 0 0 8px rgba(217, 119, 6, 0.55);
+}
+
+.status-approval_rejected .node-status-dot {
+  background: #b45309;
+}
+
 .status-completed .node-status-dot {
   background: #16a34a;
 }
@@ -416,6 +469,33 @@ async function uploadImages(files: File[]) {
   padding: 12px;
   flex: 1;
   min-height: 0;
+}
+
+.node-field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: $text-secondary;
+  font-size: 12px;
+}
+
+.node-field-label-row {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 4px;
+}
+
+.node-toggle-row {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 2px;
+  color: $text-secondary;
+  font-size: 12px;
+  line-height: 1.2;
 }
 
 .node-prompt-input {

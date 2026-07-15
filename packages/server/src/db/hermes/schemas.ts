@@ -12,15 +12,26 @@ export const USAGE_TABLE = 'session_usage'
 export const USAGE_SCHEMA: Record<string, string> = {
   id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
   session_id: 'TEXT NOT NULL',
+  run_id: "TEXT NOT NULL DEFAULT ''",
+  source: "TEXT NOT NULL DEFAULT ''",
+  agent: "TEXT NOT NULL DEFAULT ''",
+  usage_scope: "TEXT NOT NULL DEFAULT 'run'",
+  purpose: "TEXT NOT NULL DEFAULT ''",
+  api_calls: 'INTEGER NOT NULL DEFAULT 0',
   input_tokens: 'INTEGER NOT NULL DEFAULT 0',
   output_tokens: 'INTEGER NOT NULL DEFAULT 0',
   cache_read_tokens: 'INTEGER NOT NULL DEFAULT 0',
   cache_write_tokens: 'INTEGER NOT NULL DEFAULT 0',
   reasoning_tokens: 'INTEGER NOT NULL DEFAULT 0',
   model: "TEXT NOT NULL DEFAULT ''",
+  provider: "TEXT NOT NULL DEFAULT ''",
   profile: "TEXT NOT NULL DEFAULT 'default'",
+  is_estimated: 'INTEGER NOT NULL DEFAULT 0',
   created_at: 'INTEGER NOT NULL DEFAULT 0',
 }
+
+export const USAGE_RUN_INDEX = `CREATE UNIQUE INDEX IF NOT EXISTS idx_session_usage_run
+  ON ${USAGE_TABLE}(session_id, run_id, source) WHERE run_id <> ''`
 
 // ============================================================================
 // Session Store (session-store.ts)
@@ -93,6 +104,8 @@ export const WORKSPACE_RUN_CHANGES_TABLE = 'workspace_run_changes'
 
 export const WORKSPACE_RUN_CHANGES_SCHEMA: Record<string, string> = {
   change_id: 'TEXT PRIMARY KEY',
+  room_id: "TEXT NOT NULL DEFAULT ''",
+  message_id: "TEXT NOT NULL DEFAULT ''",
   session_id: 'TEXT NOT NULL',
   run_id: 'TEXT NOT NULL DEFAULT \'\'',
   source: 'TEXT NOT NULL DEFAULT \'run\'',
@@ -131,6 +144,7 @@ export const WORKSPACE_RUN_CHANGE_FILES_SCHEMA: Record<string, string> = {
 export const WORKSPACE_RUN_CHANGES_INDEXES = {
   idx_workspace_run_changes_session: 'CREATE INDEX IF NOT EXISTS idx_workspace_run_changes_session ON workspace_run_changes(session_id, created_at)',
   idx_workspace_run_changes_run: 'CREATE INDEX IF NOT EXISTS idx_workspace_run_changes_run ON workspace_run_changes(run_id)',
+  idx_workspace_run_changes_room: 'CREATE INDEX IF NOT EXISTS idx_workspace_run_changes_room ON workspace_run_changes(room_id, created_at)',
 }
 
 export const WORKSPACE_RUN_CHANGE_FILES_INDEXES = {
@@ -172,6 +186,7 @@ export const WORKFLOW_RUNS_SCHEMA: Record<string, string> = {
   status: "TEXT NOT NULL DEFAULT 'queued'",
   snapshot_nodes_json: "TEXT NOT NULL DEFAULT '[]'",
   snapshot_edges_json: "TEXT NOT NULL DEFAULT '[]'",
+  compiled_loops_json: "TEXT NOT NULL DEFAULT '[]'",
   started_at: 'INTEGER',
   finished_at: 'INTEGER',
   created_at: 'INTEGER NOT NULL',
@@ -191,6 +206,9 @@ export const WORKFLOW_RUN_NODE_SESSIONS_SCHEMA: Record<string, string> = {
   run_id: 'TEXT NOT NULL',
   workflow_id: 'TEXT NOT NULL',
   node_id: 'TEXT NOT NULL',
+  execution_id: "TEXT NOT NULL DEFAULT ''",
+  iteration_path_json: "TEXT NOT NULL DEFAULT '[]'",
+  consumed_edge_evaluation_ids_json: "TEXT NOT NULL DEFAULT '[]'",
   session_id: 'TEXT NOT NULL',
   profile: "TEXT NOT NULL DEFAULT 'default'",
   agent: "TEXT NOT NULL DEFAULT ''",
@@ -211,7 +229,33 @@ export const WORKFLOW_RUN_NODE_SESSIONS_INDEXES = {
   idx_workflow_run_node_sessions_session: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_node_sessions_session ON workflow_run_node_sessions(session_id)',
   idx_workflow_run_node_sessions_status: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_node_sessions_status ON workflow_run_node_sessions(status)',
   idx_workflow_run_node_sessions_sequence: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_node_sessions_sequence ON workflow_run_node_sessions(run_id, sequence)',
-  uniq_workflow_run_node_sessions_run_node: 'CREATE UNIQUE INDEX IF NOT EXISTS uniq_workflow_run_node_sessions_run_node ON workflow_run_node_sessions(run_id, node_id)',
+  uniq_workflow_run_node_sessions_run_execution: 'CREATE UNIQUE INDEX IF NOT EXISTS uniq_workflow_run_node_sessions_run_execution ON workflow_run_node_sessions(run_id, execution_id)',
+}
+
+export const WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE = 'workflow_run_edge_evaluations'
+
+export const WORKFLOW_RUN_EDGE_EVALUATIONS_SCHEMA: Record<string, string> = {
+  id: 'TEXT PRIMARY KEY', run_id: 'TEXT NOT NULL', workflow_id: 'TEXT NOT NULL', edge_id: 'TEXT NOT NULL',
+  source_node_id: 'TEXT NOT NULL', source_execution_id: "TEXT NOT NULL DEFAULT ''", iteration_path_json: "TEXT NOT NULL DEFAULT '[]'",
+  target_node_id: 'TEXT NOT NULL', source_outcome: 'TEXT NOT NULL',
+  status: 'TEXT NOT NULL', route: 'TEXT NOT NULL', reason: 'TEXT', sequence: 'INTEGER NOT NULL',
+  orchestration_json: "TEXT NOT NULL DEFAULT '{}'", condition_evaluation_json: 'TEXT', evaluated_at: 'INTEGER NOT NULL',
+}
+
+export const WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES = {
+  idx_workflow_run_edge_evaluations_run_sequence: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_edge_evaluations_run_sequence ON workflow_run_edge_evaluations(run_id, sequence)',
+  idx_workflow_run_edge_evaluations_edge: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_edge_evaluations_edge ON workflow_run_edge_evaluations(edge_id)',
+}
+
+export const WORKFLOW_RUN_LOOP_EPOCHS_TABLE = 'workflow_run_loop_epochs'
+export const WORKFLOW_RUN_LOOP_EPOCHS_SCHEMA: Record<string, string> = {
+  id: 'TEXT PRIMARY KEY', run_id: 'TEXT NOT NULL', workflow_id: 'TEXT NOT NULL', loop_id: 'TEXT NOT NULL',
+  iteration: 'INTEGER NOT NULL', iteration_path_json: "TEXT NOT NULL DEFAULT '[]'", status: 'TEXT NOT NULL',
+  exit_reason: 'TEXT', sequence: 'INTEGER NOT NULL', started_at: 'INTEGER NOT NULL', finished_at: 'INTEGER NOT NULL',
+}
+export const WORKFLOW_RUN_LOOP_EPOCHS_INDEXES = {
+  idx_workflow_run_loop_epochs_run_sequence: 'CREATE INDEX IF NOT EXISTS idx_workflow_run_loop_epochs_run_sequence ON workflow_run_loop_epochs(run_id, sequence)',
+  uniq_workflow_run_loop_epochs_identity: 'CREATE UNIQUE INDEX IF NOT EXISTS uniq_workflow_run_loop_epochs_identity ON workflow_run_loop_epochs(run_id, loop_id, iteration_path_json)',
 }
 
 // ============================================================================
@@ -309,6 +353,24 @@ export const DEVICES_SCHEMA: Record<string, string> = {
 export const DEVICES_INDEXES = {
   idx_devices_status: 'CREATE INDEX IF NOT EXISTS idx_devices_status ON devices(status)',
   idx_devices_last_seen: 'CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen_at)',
+}
+
+// ============================================================================
+// MCU Devices
+// ============================================================================
+
+export const MCU_DEVICES_TABLE = 'mcu_devices'
+
+export const MCU_DEVICES_SCHEMA: Record<string, string> = {
+  id: 'INTEGER PRIMARY KEY AUTOINCREMENT',
+  name: "TEXT NOT NULL DEFAULT ''",
+  device_code: 'TEXT NOT NULL UNIQUE',
+  is_official: 'INTEGER NOT NULL DEFAULT 0',
+  created_at: `INTEGER NOT NULL DEFAULT (strftime('%s','now'))`,
+}
+
+export const MCU_DEVICES_INDEXES = {
+  idx_mcu_devices_created_at: 'CREATE INDEX IF NOT EXISTS idx_mcu_devices_created_at ON mcu_devices(created_at)',
 }
 
 export const STT_PROVIDER_SETTINGS_TABLE = 'stt_provider_settings'
@@ -430,6 +492,8 @@ export const GC_ROOMS_SCHEMA: Record<string, string> = {
   tailMessageCount: 'INTEGER NOT NULL DEFAULT 10',
   totalTokens: 'INTEGER NOT NULL DEFAULT 0',
   sessionSeed: "TEXT NOT NULL DEFAULT '0'",
+  workspace: "TEXT NOT NULL DEFAULT ''",
+  ownerAuthUserId: 'INTEGER',
 }
 
 export const GC_MESSAGES_TABLE = 'gc_messages'
@@ -586,6 +650,99 @@ function createIndexes(
 
   for (const indexSQL of Object.values(indexes)) {
     db.exec(indexSQL)
+  }
+}
+
+function indexExists(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  indexName: string,
+): boolean {
+  return Boolean(db.prepare(
+    `SELECT 1 FROM sqlite_master WHERE type='index' AND name=?`
+  ).get(indexName))
+}
+
+function syncWorkflowRunNodeSessions(
+  db: NonNullable<ReturnType<typeof getDb>>,
+): void {
+  if (!tableExists(db, WORKFLOW_RUN_NODE_SESSIONS_TABLE)) {
+    syncTable(WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUN_NODE_SESSIONS_SCHEMA, {
+      indexes: WORKFLOW_RUN_NODE_SESSIONS_INDEXES,
+    })
+    return
+  }
+
+  const hasExecutionId = tableHasColumn(db, WORKFLOW_RUN_NODE_SESSIONS_TABLE, 'execution_id')
+  const hasBlankExecutionIds = hasExecutionId && Boolean(db.prepare(
+    `SELECT 1 FROM ${quoteIdentifier(WORKFLOW_RUN_NODE_SESSIONS_TABLE)} WHERE execution_id = '' LIMIT 1`
+  ).get())
+  const needsMigration =
+    !hasExecutionId ||
+    hasBlankExecutionIds ||
+    indexExists(db, 'uniq_workflow_run_node_sessions_run_node') ||
+    !indexExists(db, 'uniq_workflow_run_node_sessions_run_execution')
+
+  if (!needsMigration) {
+    syncTable(WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUN_NODE_SESSIONS_SCHEMA)
+    return
+  }
+
+  db.exec('BEGIN')
+  try {
+    syncTable(WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUN_NODE_SESSIONS_SCHEMA)
+    db.prepare(
+      `UPDATE ${quoteIdentifier(WORKFLOW_RUN_NODE_SESSIONS_TABLE)} ` +
+      `SET execution_id = node_id WHERE execution_id = ''`
+    ).run()
+    db.exec('DROP INDEX IF EXISTS uniq_workflow_run_node_sessions_run_node')
+    createIndexes(db, WORKFLOW_RUN_NODE_SESSIONS_INDEXES)
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
+
+function syncWorkflowRunEdgeEvaluations(
+  db: NonNullable<ReturnType<typeof getDb>>,
+): void {
+  if (!tableExists(db, WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE)) {
+    syncTable(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, WORKFLOW_RUN_EDGE_EVALUATIONS_SCHEMA, {
+      indexes: WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES,
+    })
+    return
+  }
+
+  const hasIncompatibleLegacySchema =
+    !tableHasColumn(db, WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, 'source_outcome') ||
+    !tableHasColumn(db, WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, 'route')
+  if (!hasIncompatibleLegacySchema) {
+    syncTable(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, WORKFLOW_RUN_EDGE_EVALUATIONS_SCHEMA, {
+      indexes: WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES,
+    })
+    return
+  }
+
+  const archiveTable = `${WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE}__legacy_v1`
+  db.exec('BEGIN')
+  try {
+    if (tableExists(db, archiveTable)) {
+      throw new Error(`cannot archive legacy ${WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE}: ${archiveTable} already exists`)
+    }
+    db.exec(
+      `ALTER TABLE ${quoteIdentifier(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE)} ` +
+      `RENAME TO ${quoteIdentifier(archiveTable)}`
+    )
+    for (const indexName of Object.keys(WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES)) {
+      db.exec(`DROP INDEX IF EXISTS ${quoteIdentifier(indexName)}`)
+    }
+    syncTable(WORKFLOW_RUN_EDGE_EVALUATIONS_TABLE, WORKFLOW_RUN_EDGE_EVALUATIONS_SCHEMA, {
+      indexes: WORKFLOW_RUN_EDGE_EVALUATIONS_INDEXES,
+    })
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
   }
 }
 
@@ -771,6 +928,7 @@ export function initAllHermesTables(): void {
   try {
     // Usage store
     syncTable(USAGE_TABLE, USAGE_SCHEMA, { primaryKey: 'id' })
+    db.exec(USAGE_RUN_INDEX)
 
     // Session store
     syncTable(SESSIONS_TABLE, SESSIONS_SCHEMA)
@@ -790,8 +948,10 @@ export function initAllHermesTables(): void {
     syncTable(WORKFLOW_RUNS_TABLE, WORKFLOW_RUNS_SCHEMA, {
       indexes: WORKFLOW_RUNS_INDEXES,
     })
-    syncTable(WORKFLOW_RUN_NODE_SESSIONS_TABLE, WORKFLOW_RUN_NODE_SESSIONS_SCHEMA, {
-      indexes: WORKFLOW_RUN_NODE_SESSIONS_INDEXES,
+    syncWorkflowRunNodeSessions(db)
+    syncWorkflowRunEdgeEvaluations(db)
+    syncTable(WORKFLOW_RUN_LOOP_EPOCHS_TABLE, WORKFLOW_RUN_LOOP_EPOCHS_SCHEMA, {
+      indexes: WORKFLOW_RUN_LOOP_EPOCHS_INDEXES,
     })
 
     // Compression snapshot
@@ -815,6 +975,12 @@ export function initAllHermesTables(): void {
     syncTable(DEVICES_TABLE, DEVICES_SCHEMA, {
       indexes: DEVICES_INDEXES,
     })
+
+    // MCU devices
+    syncTable(MCU_DEVICES_TABLE, MCU_DEVICES_SCHEMA, {
+      indexes: MCU_DEVICES_INDEXES,
+    })
+
     syncTable(STT_PROVIDER_SETTINGS_TABLE, STT_PROVIDER_SETTINGS_SCHEMA, {
       indexes: STT_PROVIDER_SETTINGS_INDEXES,
     })

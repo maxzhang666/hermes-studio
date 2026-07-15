@@ -3,14 +3,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const getSessionMock = vi.hoisted(() => vi.fn())
 const createSessionMock = vi.hoisted(() => vi.fn())
 const addMessageMock = vi.hoisted(() => vi.fn())
+const updateSessionMock = vi.hoisted(() => vi.fn())
 const updateSessionStatsMock = vi.hoisted(() => vi.fn())
 const resolveBridgeRunModelConfigMock = vi.hoisted(() => vi.fn())
 const agentRunMock = vi.hoisted(() => vi.fn())
+const recordSessionUsageMock = vi.hoisted(() => vi.fn())
 
 vi.mock('../../packages/server/src/db/hermes/session-store', () => ({
   getSession: getSessionMock,
   createSession: createSessionMock,
   addMessage: addMessageMock,
+  updateSession: updateSessionMock,
   updateSessionStats: updateSessionStatsMock,
 }))
 
@@ -59,6 +62,10 @@ vi.mock('../../packages/server/src/services/hermes/pet-state-socket', () => ({
 
 vi.mock('../../packages/server/src/services/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}))
+
+vi.mock('../../packages/server/src/services/usage-recorder', () => ({
+  recordSessionUsage: recordSessionUsageMock,
 }))
 
 function makeHarness() {
@@ -137,6 +144,17 @@ describe('ekko-agent context usage events', () => {
           toolCount: 5,
         },
       })
+      input.onEvent({
+        type: 'model.usage',
+        runId: 'run-1',
+        step: 2,
+        usage: {
+          inputTokens: 3,
+          outputTokens: 2,
+          cacheReadTokens: 1,
+          reasoningTokens: 1,
+        },
+      })
       return {
         runId: 'run-1',
         output: { role: 'assistant', content: 'done', usage: { inputTokens: 3, outputTokens: 2 } },
@@ -169,6 +187,54 @@ describe('ekko-agent context usage events', () => {
       contextTokens: 30_000,
     }))
     expect(state.contextTokens).toBe(30_000)
+    expect(recordSessionUsageMock).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      runId: 'run-1:step:2:call:1',
+      source: 'ekko_agent',
+      agent: 'ekko_agent',
+      usageScope: 'model_call',
+      apiCalls: 1,
+      usage: {
+        inputTokens: 3,
+        outputTokens: 2,
+        cacheReadTokens: 1,
+        reasoningTokens: 1,
+      },
+      profile: 'default',
+      model: 'ekko-test-model',
+      provider: 'test-provider',
+      isEstimated: false,
+    })
+    const runInput = agentRunMock.mock.calls[0][0]
+    runInput.onMemoryUsage({
+      purpose: 'ekko-memory-summary',
+      usage: { inputTokens: 21, outputTokens: 4, cacheReadTokens: 7 },
+      model: 'ekko-summary-model',
+      callIndex: 1,
+    })
+    expect(recordSessionUsageMock).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      runId: expect.stringMatching(/^memory-summary:.+:call:1$/),
+      source: 'ekko_agent',
+      agent: 'ekko_agent',
+      usageScope: 'model_call',
+      purpose: 'ekko-memory-summary',
+      apiCalls: 1,
+      usage: { inputTokens: 21, outputTokens: 4, cacheReadTokens: 7 },
+      profile: 'default',
+      model: 'ekko-summary-model',
+      provider: 'test-provider',
+      isEstimated: false,
+    })
+    expect(updateSessionMock).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      ended_at: null,
+      end_reason: null,
+      last_active: expect.any(Number),
+    }))
+    expect(updateSessionMock).toHaveBeenCalledWith('session-1', expect.objectContaining({
+      ended_at: expect.any(Number),
+      end_reason: 'complete',
+    }))
   })
 
   it('includes paired tool results in Ekko history for follow-up turns', async () => {
